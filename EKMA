@@ -1,0 +1,321 @@
+from sklearn.ensemble import RandomForestRegressor
+import warnings
+warnings.filterwarnings('ignore')
+import pandas as pd
+import numpy as np
+import matplotlib.font_manager as fm
+import matplotlib.ticker as ticker
+from matplotlib.ticker import FormatStrFormatter
+import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
+
+from datetime import datetime
+from scipy.ndimage import gaussian_filter1d
+import statsmodels.api as sm
+import math
+from matplotlib.ticker import MaxNLocator
+
+
+
+# 定义一个函数，用于分别计算除O3列以外的平均值和O3列的最大值
+def custom_agg(x):
+    return pd.Series({
+        'VOCs': x['VOCs'].mean(),
+        'NOx': x['NOx'].mean(),
+        'O3': x['O3'].max()
+    })
+
+
+print('1/开始处理数据')
+df = pd.read_excel('D:\\AAA\\VOC MLEKMA1.xlsx')
+df['TIME'] = pd.to_datetime(df['TIME'])
+
+# 设置 TIME 列作为索引
+df.set_index('TIME', inplace=True)
+
+for col in df.columns:
+    df[col] = pd.to_numeric(df[col], errors='coerce')
+# 进行线性插值
+df = df.resample('h').interpolate(method='linear')
+df['NOx'] = df['NO2(μg/m3)'] * 0.478 + df['NO(μg/m3)'] * 0.747
+df['O3'] = df['O3(μg/m3)']*0.467
+df["VOCs"] = df['VOCs(ppb)']
+# 删除添加的日期列
+df.drop(['NO(μg/m3)','NO2(μg/m3)','O3(μg/m3)','VOCs(ppb)'], axis=1, inplace=True)
+
+print('2/开始训练模型')
+#使用初始数据
+x = df.drop("O3", axis=1)
+y = df['O3']
+model_run = RandomForestRegressor(n_estimators=100,max_depth=None,
+                                      bootstrap=True,max_features='log2',
+                                      oob_score=False,n_jobs=4,
+                                      random_state=50)
+model_run.fit(x, y)
+
+print('3/情景设计')
+new_df = pd.DataFrame({'O3': y})
+#设置排放情景
+scenes = [['NOx100%-VOCs100%',1,1],['NOx100%-VOCs50%',1,0.5],['NOx100%-VOCs0%',1,0],
+          ['NOx50%-VOCs100%',0.5,1],['NOx50%-VOCs50%',0.5,0.5],['NOx50%-VOCs0%',0.5,0],
+          ['NOx0%-VOCs100%',0,1],['NOx0%-VOCs50%',0,0.5],['NOx0%-VOCs0%',0,0],
+        ['NOx100%-VOCs200%',1,2],['NOx200%-VOCs100%',2,1],['NOx200%-VOCs200%',2,2],
+        ['NOx300%-VOCs300%',3,3],['NOx400%-VOCs400%',4,4],['NOx500%-VOCs500%',5,5],
+          ]
+for scene in scenes:
+    x1 = x[x.columns]
+    x1['VOCs'] = x1['VOCs'] * scene[2]
+    x1['NOx'] = x1['NOx'] *  scene[1]
+    z = model_run.predict(x1)
+    new_df[f'{scene[0]}'] = z
+new_df.to_excel('D:\\AAA\\MLEKMA\\out\\outdata.xlsx', sheet_name='Sheet1', index=True)
+print(f'排放情景模拟数据共{len(scenes)}种存放在outdata.xlsx中！')
+
+df1 = df.between_time('07:00:00', '23:00:00')  # 选择白天时段的数据
+df2 = df.between_time('07:00:00', '09:00:00')  # 选择初始浓度数据
+df1 = df1.groupby(df1.index.date).apply(custom_agg)  # 白天均值
+df2 = df2.groupby(df2.index.date).apply(custom_agg)  # 初始均值
+df2['O3'] = df1['O3']
+#使用初始数据
+x3 = df2.drop(["O3"] ,axis=1)
+y3 = df2['O3']
+
+#随机森林最大值建模
+model_max = RandomForestRegressor(n_estimators=100,max_depth=None,
+                                      bootstrap=True,max_features='log2',
+                                      oob_score=False,n_jobs=4,
+                                      random_state=42)
+model_max.fit(x3, y3)
+
+max_df = pd.DataFrame({'O3': y3})
+scenes2 = [['NOx100%-VOCs100%',1.0,1.0],['NOx100%-VOCs75%',1.0,0.75],['NOx100%-VOCs50%',1.0,0.5],
+          ['NOx100%-VOCs25%',1.0,0.25],['NOx100%-VOCs0%',1.0,0.0],
+          ['NOx75%-VOCs100%',0.75,1],['NOx75%-VOCs75%',0.75,0.75],['NOx75%-VOCs50%',0.75,0.5],
+          ['NOx75%-VOCs25%',0.75,0.25],['NOx75%-VOCs0%',0.75,0],
+          ['NOx50%-VOCs100%',0.5,1.0],['NOx50%-VOCs75%',0.5,0.75],['NOx50%-VOCs50%',0.5,0.5],
+          ['NOx50%-VOCs25%',0.5,0.25],['NOx50%-VOCs0%',0.5,0.0],
+          ['NOx25%-VOCs100%',0.25,1.0],['NOx25%-VOCs75%',0.25,0.75],['NOx25%-VOCs50%',0.25,0.5],
+          ['NOx25%-VOCs25%',0.25,0.25],['NOx25%-VOCs0%',0.25,0.0],
+          ['NOx0%-VOCs100%',0.0,1.0],['NOx0%-VOCs75%',0.0,0.75],['NOx0%-VOCs50%',0.0,0.5],
+          ['NOx0%-VOCs25%',0.0,0.25],['NOx0%-VOCs0%',0.0,0.0]]
+for scene in scenes2:
+    x_max = x3[x3.columns]
+    x_max['VOCs'] = x_max['VOCs'] * scene[2]
+    x_max['NOx'] = x_max['NOx'] *  scene[1]
+    z = model_max.predict(x_max)
+    max_df[f'{scene[0]}'] = z
+max_df.to_excel('D:\\AAA\\MLEKMA\\out\\outdata8h.xlsx', sheet_name='Sheet1', index=True)
+print(f'8小时滑动平均最大值存放在outdata8h.xlsx中！')
+
+print('4/计算等值曲线')
+
+#非线性建模
+NOx_x = pd.DataFrame({'NOx': x3['NOx']})
+NOx_x['NOx_squared'] = x3['NOx'] ** 2
+VOCs_x = pd.DataFrame({'VOCs': x3['VOCs']})
+# 添加常数项
+NOx_x= sm.add_constant(NOx_x)
+VOCs_x= sm.add_constant(VOCs_x)
+# # 将常数项列的值设置为0
+NOx_x['const'] = 0
+VOCs_x['const'] = 0
+# # 创建并拟合OLS模型
+model_NOx = sm.OLS(y3, NOx_x).fit()
+model_VOCs = sm.OLS(y3, VOCs_x).fit()
+NOx_R = model_NOx.rsquared
+VOCs_R = model_VOCs.rsquared
+NOx_k , VOCs_k = NOx_R/(NOx_R+VOCs_R),VOCs_R/(NOx_R+VOCs_R)
+
+# # 输出模型的详细报告
+print('5/计算月均值：')
+
+df2.index = pd.to_datetime(df2.index)
+monthly_max = df2.resample('M').max()
+monthly_max['year_month'] = monthly_max.index.to_series().dt.strftime('%Y-%m')
+
+NOx_rr = [i for i in range(201)]
+VOCs_rr = [i for i in range(201)]
+EKMAO3 =  np.zeros((len(VOCs_rr), len(NOx_rr)))
+EKMANOx = np.zeros((len(VOCs_rr), len(NOx_rr)))
+EKMAVOCs = np.zeros((len(VOCs_rr), len(NOx_rr)))
+
+#减排情景模拟
+for i in VOCs_rr:
+    EKMAVOCs[i, :] = x3['VOCs'].max() * (i / 200)*1.5
+for j in NOx_rr:
+    EKMANOx[:, j] = x3['NOx'].max() * (j / 200)*1.2
+
+K = EKMAVOCs*EKMANOx
+K= K/K.max()
+#减排情景模拟
+for i in VOCs_rr:
+    for j in NOx_rr:
+        X_VOCs = [0, EKMAVOCs[i, j]]
+        O3_VOCs = model_VOCs.predict(X_VOCs)
+        X_NOx = [0, EKMANOx[i, j], EKMANOx[i, j] ** 2]
+        O3_NOx = model_NOx.predict(X_NOx)
+        EKMAO3[i, j] = (math.exp(VOCs_k) * O3_VOCs + math.exp(NOx_k) * O3_NOx)* math.exp(K[i,j])
+        # EKMAO3[i, j] = (VOCs_k*O3_VOCs+NOx_k*O3_NOx)* math.exp(K[i,j])
+#归一化数据
+EKMAO3 = EKMAO3-df2['O3'].min()
+EKMAO3 = EKMAO3-EKMAO3.min()
+EKMAO3 = EKMAO3 * (df2['O3'].max() / EKMAO3.max())
+# EKMAO3[EKMAO3 < df2['O3'].min()*0.5] = df2['O3'].min()*0.5
+EKMAO3 = gaussian_filter1d(EKMAO3,sigma =1)
+
+print(f"NOx 的相对贡献权重：{NOx_k:.4f}")
+print(f"VOCs 的相对贡献权重：{VOCs_k:.4f}")
+
+
+print('6/绘制EKMA等值曲线图！')
+levels = np.linspace(EKMAO3.min(), EKMAO3.max(), 20)
+fig = plt.figure(figsize=(12, 9))
+ax = plt.axes()
+ax.set_xlim([EKMAVOCs.min(), EKMAVOCs.max()])
+# ax.semilogy()  # 设置Y轴为对数刻度
+ax.set_ylim([EKMANOx.min(), EKMANOx.max()])
+#底图
+# 获取原始 jet 色图的颜色节点（共256个）
+original_jet = plt.cm.jet(np.linspace(0, 1, 256))
+
+# 截取后半部分（如后50%：索引128到255）
+start_index = 128  # 调整此处以控制截取位置
+half_jet = original_jet[start_index:]
+
+# 创建自定义色图
+cmap = mcolors.LinearSegmentedColormap.from_list('half_jet', half_jet)
+
+EMKA_mpa = ax.contourf(EKMAVOCs, EKMANOx,EKMAO3,levels=levels,alpha=1, cmap=cmap)
+
+contour_lines = ax.contour(EKMAVOCs, EKMANOx, EKMAO3, colors='grey', linewidths=0.5,levels=15)
+plt.clabel(contour_lines, inline=True, fontsize=10, fmt='%d')
+
+months = monthly_max['year_month']
+months_VOCs = monthly_max['VOCs']
+months_NOx = monthly_max['NOx']
+
+#标注实测排放情景
+for x,y,n in zip(months_VOCs,months_NOx,months):
+    ax.plot(x, y, '.', markersize=15,markerfacecolor='b', markeredgecolor='b',)
+    ax.text(x, y+2, f'{n}',ha='center', va='center', fontsize=15,color='b')
+
+# 设置经度和纬度的标签
+ax.set_xlabel('VOCs(ppb)',fontsize=15)
+ax.set_ylabel('NOx(ppb)', fontsize=15)
+# 设置刻度标签的格式
+ax.xaxis.set_major_formatter(ticker.FormatStrFormatter('%.2f'))
+ax.yaxis.set_major_formatter(ticker.FormatStrFormatter('%.2f'))
+
+plt.title("Empirical Kinetics Modeling Approach Analysis",y =1.0, fontsize=18)
+
+
+#添加颜色条
+cbar = plt.colorbar(EMKA_mpa, shrink=0.7)
+cbar.ax.yaxis.set_major_formatter(FormatStrFormatter('%.0f'))
+cbar.ax.tick_params(labelsize=15)  # 设置色条刻度的字体大小为12
+cbar.set_label('OZONE_max (ppb)', fontsize=15)  # 设置色条标签的字体大小为14
+plt.tight_layout()
+# 保存图像
+plt.savefig('out/EKMA analysis.png', dpi=800)
+plt.close()
+
+print('7/减排路线设计')
+
+NOx_95 ,VOCs_95  = df2['NOx'].quantile(0.95)*1.5 ,df2['VOCs'].quantile(0.95)*1.2
+EKMAVOCs_ind = EKMAVOCs[:,0]
+EKMANOx_ind = EKMANOx[0,:]
+max_i = (np.abs(EKMAVOCs_ind - VOCs_95)).argmin()
+max_j = (np.abs(EKMANOx_ind - NOx_95)).argmin()
+
+#减排方案1，VOCs:NOx = 1 : 0
+case1 = [EKMAO3[max_i,max_j]]
+i = max_i
+while i > 0 :
+    i = i - 2
+    if EKMAO3[i,max_j] == EKMAO3[i+2,max_j]:
+        break
+    if i < 0 :
+        break
+    case1.append(EKMAO3[i,max_j])
+#减排方案2，VOCs:NOx = 0 : 1
+case2 = [EKMAO3[max_i,max_j]]
+j = max_j
+while j > 0 :
+    j = j - 2
+    if EKMAO3[max_i,j] == EKMAO3[max_i,j+2]:
+        break
+    if j < 0:
+        break
+    case2.append(EKMAO3[max_i,j])
+
+#减排方案3，VOCs:NOx = 1 : 1
+case3 = [EKMAO3[max_i,max_j]]
+i = max_i
+j = max_j
+while i > 0 and j > 0:
+    i = i - 2
+    j = j - 2
+    if EKMAO3[i,j] == EKMAO3[i+2,j+2]:
+        break
+    if i < 0 or j < 0:
+        break
+    case3.append(EKMAO3[i,j])
+
+#减排方案4，VOCs:NOx = 2 : 1
+case4 = [EKMAO3[max_i,max_j]]
+i = max_i
+j = max_j
+while i > 0 and j > 0:
+    i = i - 4
+    j = j - 2
+    if EKMAO3[i,j] == EKMAO3[i+4,j+2]:
+        break
+    if i < 0 or j < 0:
+        break
+    case4.append(EKMAO3[i,j])
+
+#减排方案5，VOCs:NOx = 1 : 2
+case5 = [EKMAO3[max_i,max_j]]
+i = max_i
+j = max_j
+while i > 0 and j > 0:
+    i = i - 2
+    j = j - 4
+    if EKMAO3[i,j] == EKMAO3[i+2,j+4]:
+        break
+    if i < 0 or j < 0:
+        break
+    case5.append(EKMAO3[i,j])
+
+#减排路线图
+colors = ['blue','red','green','purple','orange','cyan','magenta','yellow']
+labels = ['VOCs:NOx = 1 : 0','VOCs:NOx = 0 : 1','VOCs:NOx = 1 : 1','VOCs:NOx = 2 : 1','VOCs:NOx = 1 : 2',]
+fig = plt.figure(figsize=(12, 9))
+ax = plt.axes()
+cases = [case1,case2,case3,case4,case5]
+for i,case in enumerate(cases):
+    color = colors[i]
+    X = list(range(0, len(case)))
+    ax.plot(X, case, linewidth = 2, color=color)
+ax.legend(labels, fontsize=15, loc='upper right',
+          framealpha=0, edgecolor='black', facecolor='white', labelcolor='gray')
+# 设置经度和纬度的标签
+ax.set_xlabel('percentage(%)',fontsize=15)
+ax.set_ylabel('Ozone(ppb)', fontsize=15)
+# 设置刻度标签的格式
+ax.xaxis.set_major_formatter(ticker.FormatStrFormatter('%.0f%%'))
+ax.yaxis.set_major_formatter(ticker.FormatStrFormatter('%.0f'))
+# 设置X轴和Y轴上的刻度标签数量
+ax.xaxis.set_major_locator(MaxNLocator(nbins=10))
+ax.yaxis.set_major_locator(MaxNLocator(nbins=10))
+
+plt.title("Design of different schemes for reducing ozone emissions", y = 1.05,fontsize=18)
+
+# 在y轴等于75的位置绘制红色的虚线
+ax.axhline(y=47, color='y',linewidth=1.5, linestyle='--')
+ax.axhline(y=75, color='r',linewidth=1.5, linestyle='--')
+ax.axhline(y=case1[0], color='black', linewidth=1.5,linestyle='--')
+# 添加网格线
+ax.grid(True, color='gray', linestyle='--', linewidth=0.5)  # 添加灰色虚线网格
+plt.savefig('out/Ozone Emission Reduction Scheme Design.png', dpi=800)
+plt.close()
